@@ -87,6 +87,16 @@ workdir() {
 # ---------------------------------------------------------------------------
 # Applying updates to the base branch.
 
+# Commits on the target branch missing from the base branch. Without gh the
+# answer is unknown; report 1 so the caller does the (local) check itself.
+target_ahead() {
+  if $gh_ok; then
+    gh api "repos/$REPO/compare/$BASE...$TARGET" --jq .ahead_by
+  else
+    echo 1
+  fi
+}
+
 ensure_pr() {
   if ! $gh_ok; then
     spork_warn "gh unavailable; cannot open a pull request"
@@ -94,17 +104,17 @@ ensure_pr() {
   fi
   local short=${upstream_sha:0:12} num title body ahead
   title="Sync upstream $UPSTREAM_BRANCH @ $short"
-  num=$(gh pr list -R "$REPO" --head "$TARGET" --base "$BASE" --state open \
-    --json number --jq '.[0].number // empty')
-  if [[ -n $num ]]; then
-    gh pr edit "$num" -R "$REPO" --title "$title" >/dev/null
-    pr_url=$(gh pr view "$num" -R "$REPO" --json url --jq .url)
+  read -r num pr_url < <(gh pr list -R "$REPO" --head "$TARGET" --base "$BASE" --state open \
+    --json number,url --jq '.[0] | select(.) | "\(.number) \(.url)"') || true
+  if [[ -n ${num:-} ]]; then
+    # REST rather than `gh pr edit`, which breaks on some gh versions.
+    gh api -X PATCH "repos/$REPO/pulls/$num" -f title="$title" >/dev/null
     spork_log "updated pull request $pr_url"
     [[ $result == unchanged ]] || result=pr-updated
     return 0
   fi
-  ahead=$(gh api "repos/$REPO/compare/$BASE...$TARGET" --jq .ahead_by)
-  if [[ ${ahead:-0} -eq 0 ]]; then
+  ahead=$(target_ahead)
+  if [[ $ahead -eq 0 ]]; then
     spork_log "'$BASE' already contains '$TARGET'; no pull request needed"
     return 0
   fi
@@ -126,7 +136,8 @@ ensure_pr() {
 
 apply_to_base() {
   workdir
-  ogit --git-dir="$work" fetch -q --no-tags "$ORIGIN_URL" "+refs/heads/$BASE:refs/spork/base"
+  ogit --git-dir="$work" fetch -q --no-tags "$ORIGIN_URL" \
+    "+refs/heads/$TARGET:refs/spork/target" "+refs/heads/$BASE:refs/spork/base"
   local base_sha out tree merge
   base_sha=$(git --git-dir="$work" rev-parse refs/spork/base)
 
@@ -165,8 +176,14 @@ apply_to_base() {
 
 if [[ $upstream_sha == "$previous_sha" ]]; then
   spork_log "'$TARGET' is up to date with $UPSTREAM_URL $UPSTREAM_BRANCH ($upstream_sha)"
-  # Re-check in case a previous run pushed but failed to open the PR.
-  if [[ $ON_UPDATE == pr ]]; then ensure_pr; fi
+  # The base branch may still be behind (new base, earlier failed run, PR
+  # closed unmerged): reconcile, after a cheap API check.
+  case $ON_UPDATE in
+    pr) ensure_pr ;;
+    fast-forward | merge)
+      if [[ $(target_ahead) -gt 0 ]]; then apply_to_base; fi
+      ;;
+  esac
 else
   workdir
   spork_log "fetching $UPSTREAM_URL $UPSTREAM_BRANCH"

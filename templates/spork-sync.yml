@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: __RUNS_ON__
     timeout-minutes: 30
     steps:
       - uses: __ACTION_REF__

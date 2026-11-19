@@ -28,6 +28,8 @@ Options:
   --base-branch B          your working/default branch (default: main)
   --on-update MODE         pr | none | fast-forward | merge (default: pr)
   --schedule CRON          sync schedule (default: "23 */6 * * *")
+  --runs-on LABELS         runner for the sync job, e.g. self-hosted or
+                           "[self-hosted, linux]" (default: ubuntu-latest)
   --action-ref REF         sync action to use (default: Shardbyte/spork@v1)
   --sync-tags              also mirror upstream tags
   --dry-run                prepare everything locally, create nothing
@@ -50,7 +52,7 @@ esac
 
 upstream="" owner="" name="" upstream_branch="" target=upstream base=main
 on_update=pr schedule="23 */6 * * *" action_ref="$SPORK_ACTION_REPO@v1"
-sync_tags=false dry_run=false
+sync_tags=false dry_run=false runs_on=ubuntu-latest
 
 need() { [[ $# -ge 2 && -n $2 ]] || spork_die "$1 needs a value"; }
 while [[ $# -gt 0 ]]; do
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --base-branch) need "$@"; base=$2; shift 2 ;;
     --on-update) need "$@"; on_update=$2; shift 2 ;;
     --schedule) need "$@"; schedule=$2; shift 2 ;;
+    --runs-on) need "$@"; runs_on=$2; shift 2 ;;
     --action-ref) need "$@"; action_ref=$2; shift 2 ;;
     --sync-tags) sync_tags=true; shift ;;
     --dry-run) dry_run=true; shift ;;
@@ -114,7 +117,7 @@ upstream_sha=$(git --git-dir="$work/repo.git" rev-parse refs/spork/upstream)
 # Render the workflow template. Values are inserted literally via awk.
 render() {
   awk -v url="$upstream_url" -v ub="$upstream_branch" -v tb="$target" \
-    -v mode="$on_update" -v cron="$schedule" -v ref="$action_ref" -v tags="$sync_tags" '
+    -v mode="$on_update" -v cron="$schedule" -v ref="$action_ref" -v tags="$sync_tags" -v runson="$runs_on" '
     function rep(s, k, v,   i) {
       while ((i = index(s, k)) > 0) s = substr(s, 1, i - 1) v substr(s, i + length(k))
       return s
@@ -123,7 +126,7 @@ render() {
       $0 = rep($0, "__UPSTREAM_URL__", url); $0 = rep($0, "__UPSTREAM_BRANCH__", ub)
       $0 = rep($0, "__TARGET_BRANCH__", tb); $0 = rep($0, "__ON_UPDATE__", mode)
       $0 = rep($0, "__SCHEDULE__", cron);    $0 = rep($0, "__ACTION_REF__", ref)
-      $0 = rep($0, "__SYNC_TAGS__", tags)
+      $0 = rep($0, "__SYNC_TAGS__", tags);  $0 = rep($0, "__RUNS_ON__", runson)
       print
     }' "$root/templates/spork-sync.yml"
 }

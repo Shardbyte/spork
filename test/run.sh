@@ -24,10 +24,8 @@ cat >"$tmp/bin/gh" <<'EOF'
 printf '%s\n' "$*" >>"$GH_LOG"
 [[ $2 != --paginate ]] || set -- "$1" "${@:3}"
 case "$1 $2" in
-  "pr list") printf '%s\n' "${STUB_PR_NUMBER:-}" ;;
-  "pr view") printf 'https://github.com/test/repo/pull/%s\n' "$STUB_PR_NUMBER" ;;
+  "pr list") [[ -z ${STUB_PR_NUMBER:-} ]] || printf '%s https://github.com/test/repo/pull/%s\n' "$STUB_PR_NUMBER" "$STUB_PR_NUMBER" ;;
   "pr create") printf 'https://github.com/test/repo/pull/99\n' ;;
-  "pr edit") ;;
   "api repos/test/repo/compare/"*) printf '%s\n' "${STUB_AHEAD:-1}" ;;
   "api repos/test/repo/actions/workflows") printf '%b' "${STUB_WORKFLOWS:-}" ;;
   "api repos/test/repo/actions/runs?per_page=100") printf '%b' "${STUB_RUNS:-}" ;;
@@ -113,7 +111,8 @@ echo "existing PR is updated, not duplicated"
 commit_up c.txt three
 STUB_PR_NUMBER=7 sync
 check "no new PR" '! grep -q "pr create" "$GH_LOG"'
-check "PR edited" 'grep -q "pr edit 7" "$GH_LOG"'
+check "PR title updated" 'grep -q "api -X PATCH repos/test/repo/pulls/7" "$GH_LOG"'
+check "existing pr-url output" '[[ $(o pr-url) == https://github.com/test/repo/pull/7 ]]'
 check "result=pr-updated" '[[ $(o result) == pr-updated ]]'
 
 echo "unchanged but PR missing gets reconciled"
@@ -148,6 +147,16 @@ main_before=$(ref "$origin" main)
 sync SPORK_ON_UPDATE=fast-forward
 check "main untouched" '[[ $(ref "$origin" main) == "$main_before" ]]'
 check "fell back to PR" '[[ $(o result) == pr-opened ]]'
+
+echo "unchanged run still merges a base that is behind"
+setup
+sync SPORK_ON_UPDATE=none
+commit_up h.txt eight
+sync SPORK_ON_UPDATE=none
+STUB_AHEAD=1 sync SPORK_ON_UPDATE=merge
+check "result=merged without upstream change" '[[ $(o result) == merged ]]'
+STUB_AHEAD=0 sync SPORK_ON_UPDATE=merge
+check "then unchanged" '[[ $(o result) == unchanged ]]'
 
 echo "merge mode merges cleanly diverged base"
 commit_up g.txt seven

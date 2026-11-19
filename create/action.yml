@@ -37,6 +37,10 @@ inputs:
     description: Cron schedule for the sync workflow.
     required: false
     default: "23 */6 * * *"
+  runs-on:
+    description: Runner for the sync job, e.g. self-hosted or "[self-hosted, linux]".
+    required: false
+    default: ubuntu-latest
   sync-tags:
     description: Also mirror upstream tags.
     required: false
@@ -78,11 +82,12 @@ runs:
         IN_ON_UPDATE: ${{ inputs.on-update }}
         IN_SCHEDULE: ${{ inputs.schedule }}
         IN_SYNC_TAGS: ${{ inputs.sync-tags }}
+        IN_RUNS_ON: ${{ inputs.runs-on }}
         IN_ACTION_REF: ${{ inputs.action-ref }}
       run: |
         args=(create "$IN_UPSTREAM"
           --target-branch "$IN_TARGET_BRANCH" --base-branch "$IN_BASE_BRANCH"
-          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF")
+          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF" --runs-on "$IN_RUNS_ON")
         [[ -z $IN_OWNER ]] || args+=(--owner "$IN_OWNER")
         [[ -z $IN_NAME ]] || args+=(--name "$IN_NAME")
         [[ -z $IN_UPSTREAM_BRANCH ]] || args+=(--upstream-branch "$IN_UPSTREAM_BRANCH")
