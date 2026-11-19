@@ -33,6 +33,10 @@ Options:
   --action-ref REF         sync action to use (default: Shardbyte/spork@v1)
   --sync-tags              also mirror upstream tags
   --auth token|app         how the sync authenticates (default: token)
+  --admin-auth gh|app      how this script authenticates: gh (GH_TOKEN or
+                           `gh auth login`, default) or app (the GitHub App
+                           from SPORK_APP_ID/SPORK_APP_PRIVATE_KEY; --owner
+                           must be an organization the App is installed on)
   --dry-run                prepare everything locally, create nothing
 
 Sync credentials are read from the environment and stored in the new repo:
@@ -41,6 +45,9 @@ Sync credentials are read from the environment and stored in the new repo:
                 SPORK_APP_PRIVATE_KEY      -> secret SPORK_APP_PRIVATE_KEY
                 (or SPORK_APP_PRIVATE_KEY_FILE, a path to the .pem)
 The App must be installed on the new repository (e.g. on all repositories).
+In an organization, credentials that already exist as org-level secrets /
+variables are not copied into the repository (for "selected repositories"
+visibility, the new repository is added to the list).
 Missing values are reported; set them yourself before the first sync.
 EOF
 }
@@ -58,7 +65,7 @@ esac
 
 upstream="" owner="" name="" upstream_branch="" target=upstream base=main
 on_update=pr schedule="23 */6 * * *" action_ref="$SPORK_ACTION_REPO@v1"
-sync_tags=false dry_run=false runs_on=ubuntu-latest auth=token
+sync_tags=false dry_run=false runs_on=ubuntu-latest auth=token admin_auth=gh
 
 need() { [[ $# -ge 2 && -n $2 ]] || spork_die "$1 needs a value"; }
 while [[ $# -gt 0 ]]; do
@@ -74,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --action-ref) need "$@"; action_ref=$2; shift 2 ;;
     --sync-tags) sync_tags=true; shift ;;
     --auth) need "$@"; auth=$2; shift 2 ;;
+    --admin-auth) need "$@"; admin_auth=$2; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h | --help) usage; exit 0 ;;
     -*) spork_die "unknown option $1" ;;
@@ -90,7 +98,11 @@ case $auth in
   token | app) ;;
   *) spork_die "--auth must be token or app" ;;
 esac
-if [[ $auth == app && -z ${SPORK_APP_PRIVATE_KEY:-} && -n ${SPORK_APP_PRIVATE_KEY_FILE:-} ]]; then
+case $admin_auth in
+  gh | app) ;;
+  *) spork_die "--admin-auth must be gh or app" ;;
+esac
+if [[ -z ${SPORK_APP_PRIVATE_KEY:-} && -n ${SPORK_APP_PRIVATE_KEY_FILE:-} ]]; then
   SPORK_APP_PRIVATE_KEY=$(<"$SPORK_APP_PRIVATE_KEY_FILE")
 fi
 case $on_update in
@@ -106,7 +118,17 @@ if [[ -z $name ]]; then
   name=$(basename "${upstream_url%/}")
   name=${name%.git}
 fi
+if [[ $admin_auth == app ]]; then
+  [[ -n $owner ]] || spork_die "--admin-auth app needs --owner <organization>"
+  [[ -n ${SPORK_APP_ID:-} && -n ${SPORK_APP_PRIVATE_KEY:-} ]] ||
+    spork_die "--admin-auth app needs SPORK_APP_ID and SPORK_APP_PRIVATE_KEY (or SPORK_APP_PRIVATE_KEY_FILE)"
+  spork_app_token "$SPORK_APP_ID" "$SPORK_APP_PRIVATE_KEY" "$owner" ||
+    spork_die "could not authenticate as GitHub App $SPORK_APP_ID on $owner (is it installed on the organization?)"
+  export GH_TOKEN=$SPORK_APP_TOKEN
+  spork_log "authenticated as GitHub App $SPORK_APP_ID on $owner"
+fi
 [[ -n $owner ]] || owner=$(gh api user --jq .login)
+owner_type=$(gh api "users/$owner" --jq .type) || spork_die "account $owner not found"
 repo="$owner/$name"
 origin_url="${GITHUB_SERVER_URL:-https://github.com}/$repo.git"
 
@@ -114,8 +136,35 @@ if [[ -z $upstream_branch ]]; then
   upstream_branch=$(spork_default_branch git "$upstream_url")
   [[ -n $upstream_branch ]] || spork_die "could not determine default branch of $upstream_url"
 fi
-if ! $dry_run && gh repo view "$repo" >/dev/null 2>&1; then
+if ! $dry_run && gh api "repos/$repo" >/dev/null 2>&1; then
   spork_die "$repo already exists"
+fi
+
+# Organization Actions policy: fail before creating anything if it would
+# block spork. Reading it needs org admin (admin:org); skip if we can't.
+org_enable_repo=false
+if [[ $owner_type == Organization ]]; then
+  if policy=$(gh api "orgs/$owner/actions/permissions" --jq '"\(.enabled_repositories) \(.allowed_actions)"' 2>/dev/null); then
+    read -r org_enabled org_allowed <<<"$policy"
+    case $org_enabled in
+      none) spork_die "Actions is disabled for all repositories in $owner" ;;
+      selected) org_enable_repo=true ;;
+    esac
+    case $org_allowed in
+      local_only) spork_die "$owner only allows local actions; allow ${action_ref%@*}@* in its Actions settings" ;;
+      selected)
+        allowed=false
+        while read -r pattern; do
+          # shellcheck disable=SC2053 # pattern is a glob on purpose
+          if [[ -n $pattern && $action_ref == $pattern ]]; then allowed=true; fi
+        done < <(gh api "orgs/$owner/actions/permissions/selected-actions" --jq '.patterns_allowed[]')
+        $allowed || spork_die "$owner's allowed actions don't include $action_ref; add ${action_ref%@*}@* in its Actions settings"
+        ;;
+    esac
+    spork_log "org Actions policy ok (repositories: $org_enabled, actions: $org_allowed)"
+  else
+    spork_warn "cannot read $owner's Actions policy (needs org admin); skipping the check"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -186,7 +235,14 @@ fi
 api_put() { gh api -X PUT "repos/$repo/$1" --input - >/dev/null <<<"$2"; }
 
 spork_log "creating private repository $repo"
-gh repo create "$repo" --private --description "Private copy of $upstream_url (managed by spork)" >/dev/null
+create_path=user/repos
+[[ $owner_type != Organization ]] || create_path="orgs/$owner/repos"
+repo_id=$(gh api "$create_path" -f name="$name" -F private=true \
+  -f description="Private copy of $upstream_url (managed by spork)" --jq .id)
+if $org_enable_repo; then
+  gh api -X PUT "orgs/$owner/actions/permissions/repositories/$repo_id" >/dev/null ||
+    spork_warn "$owner enables Actions only for selected repositories, and adding $repo failed; add it in the org's Actions settings"
+fi
 
 # Push with Actions disabled so upstream workflows never get triggered.
 api_put actions/permissions '{"enabled": false}'
@@ -195,7 +251,7 @@ spork_set_auth "${GH_TOKEN:-$(gh auth token)}"
 spork_log "pushing $target and $base"
 ogit --git-dir="$work/repo.git" push -q "$origin_url" \
   "$upstream_sha:refs/heads/$target" "$base_sha:refs/heads/$base"
-gh repo edit "$repo" --default-branch "$base" >/dev/null
+gh api -X PATCH "repos/$repo" -f default_branch="$base" >/dev/null
 
 # Push events are processed asynchronously; events handled while Actions is
 # still disabled are dropped. Give them time before re-enabling.
@@ -223,26 +279,39 @@ if ((expected_foreign > 0)); then
   fi
 fi
 
+# store_credential secret|variable NAME VALUE — prefer an existing org-level
+# credential; otherwise store it in the repository.
+store_credential() {
+  local kind=$1 cname=$2 value=$3 vis
+  if [[ $owner_type == Organization ]] &&
+    vis=$(gh api "orgs/$owner/actions/${kind}s/$cname" --jq .visibility 2>/dev/null); then
+    if [[ $vis == selected ]]; then
+      if gh api -X PUT "orgs/$owner/actions/${kind}s/$cname/repositories/$repo_id" >/dev/null 2>&1; then
+        spork_log "gave $repo access to org $kind $cname"
+      else
+        spork_warn "org $kind $cname is limited to selected repositories; add $repo to it"
+      fi
+    else
+      spork_log "using org-level $kind $cname (visibility: $vis)"
+    fi
+    return 0
+  fi
+  if [[ -z $value ]]; then
+    spork_warn "$cname not set — add it before the first sync: gh $kind set $cname -R $repo"
+  elif [[ $kind == secret ]]; then
+    printf '%s' "$value" | gh secret set "$cname" -R "$repo"
+    spork_log "stored $kind $cname"
+  else
+    gh variable set "$cname" -R "$repo" --body "$value" >/dev/null
+    spork_log "stored $kind $cname"
+  fi
+}
+
 if [[ $auth == token ]]; then
-  if [[ -n ${SPORK_TOKEN:-} ]]; then
-    printf '%s' "$SPORK_TOKEN" | gh secret set SPORK_TOKEN -R "$repo"
-    spork_log "stored SPORK_TOKEN secret"
-  else
-    spork_warn "SPORK_TOKEN not set — add it before the first sync: gh secret set SPORK_TOKEN -R $repo"
-  fi
+  store_credential secret SPORK_TOKEN "${SPORK_TOKEN:-}"
 else
-  if [[ -n ${SPORK_APP_ID:-} ]]; then
-    gh variable set SPORK_APP_ID -R "$repo" --body "$SPORK_APP_ID" >/dev/null
-    spork_log "stored SPORK_APP_ID variable"
-  else
-    spork_warn "SPORK_APP_ID not set — add it: gh variable set SPORK_APP_ID -R $repo"
-  fi
-  if [[ -n ${SPORK_APP_PRIVATE_KEY:-} ]]; then
-    printf '%s' "$SPORK_APP_PRIVATE_KEY" | gh secret set SPORK_APP_PRIVATE_KEY -R "$repo"
-    spork_log "stored SPORK_APP_PRIVATE_KEY secret"
-  else
-    spork_warn "SPORK_APP_PRIVATE_KEY not set — add it: gh secret set SPORK_APP_PRIVATE_KEY -R $repo < key.pem"
-  fi
+  store_credential variable SPORK_APP_ID "${SPORK_APP_ID:-}"
+  store_credential secret SPORK_APP_PRIVATE_KEY "${SPORK_APP_PRIVATE_KEY:-}"
   if [[ -n ${SPORK_APP_ID:-} && -n ${SPORK_APP_PRIVATE_KEY:-} ]]; then
     if spork_app_token "$SPORK_APP_ID" "$SPORK_APP_PRIVATE_KEY" "$repo"; then
       spork_log "verified: GitHub App $SPORK_APP_ID can access $repo"

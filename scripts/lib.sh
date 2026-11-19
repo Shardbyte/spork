@@ -139,8 +139,10 @@ spork_disable_foreign_workflows() {
 
 spork_b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
-# spork_app_token APP_ID PRIVATE_KEY REPO
-# Mints an installation token for REPO into SPORK_APP_TOKEN (a variable, not
+# spork_app_token APP_ID PRIVATE_KEY TARGET
+# TARGET is owner/repo (token scoped to that repository) or an organization
+# name (token for the org installation, covering repositories created later).
+# Mints the installation token into SPORK_APP_TOKEN (a variable, not
 # stdout, so the ::add-mask:: command reaches the runner before any use).
 # APP_ID may be the numeric App ID or the App's client ID. Returns non-zero
 # with a message on failure.
@@ -169,12 +171,17 @@ spork_app_token() {
   jwt="$header.$payload.$sig"
   if [[ -n ${GITHUB_ACTIONS:-} ]]; then printf '::add-mask::%s\n' "$jwt"; fi
 
-  if ! inst=$(GH_TOKEN=$jwt gh api -H "Authorization: Bearer $jwt" "repos/$repo/installation" --jq .id); then
+  local inst_path="repos/$repo" scope=(-f "repositories[]=${repo#*/}")
+  if [[ $repo != */* ]]; then
+    inst_path="orgs/$repo"
+    scope=()
+  fi
+  if ! inst=$(GH_TOKEN=$jwt gh api -H "Authorization: Bearer $jwt" "$inst_path/installation" --jq .id); then
     spork_warn "GitHub App $app_id is not installed on $repo (or the key/ID is wrong)"
     return 1
   fi
   if ! SPORK_APP_TOKEN=$(GH_TOKEN=$jwt gh api -X POST -H "Authorization: Bearer $jwt" \
-    "app/installations/$inst/access_tokens" -f "repositories[]=${repo#*/}" --jq .token) ||
+    "app/installations/$inst/access_tokens" "${scope[@]}" --jq .token) ||
     [[ -z $SPORK_APP_TOKEN ]]; then
     SPORK_APP_TOKEN=""
     spork_warn "could not create an installation token for $repo"

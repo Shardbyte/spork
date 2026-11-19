@@ -50,8 +50,18 @@ inputs:
     required: false
     default: Shardbyte/spork@v1
   admin-token:
-    description: Token that can create repositories and manage their settings, secrets and workflows.
-    required: true
+    description: >-
+      Token that can create repositories and manage their settings, secrets
+      and workflows. Not needed with admin-auth app.
+    required: false
+    default: ""
+  admin-auth:
+    description: >-
+      gh (use admin-token) or app (create the repository as the GitHub App
+      given by app-id/app-private-key; owner must be an organization the App
+      is installed on).
+    required: false
+    default: gh
   auth:
     description: How the sync authenticates, token or app.
     required: false
@@ -88,6 +98,7 @@ runs:
         SPORK_APP_ID: ${{ inputs.app-id }}
         SPORK_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
         IN_AUTH: ${{ inputs.auth }}
+        IN_ADMIN_AUTH: ${{ inputs.admin-auth }}
         IN_UPSTREAM: ${{ inputs.upstream }}
         IN_OWNER: ${{ inputs.owner }}
         IN_NAME: ${{ inputs.name }}
@@ -102,7 +113,7 @@ runs:
       run: |
         args=(create "$IN_UPSTREAM"
           --target-branch "$IN_TARGET_BRANCH" --base-branch "$IN_BASE_BRANCH"
-          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF" --runs-on "$IN_RUNS_ON" --auth "$IN_AUTH")
+          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF" --runs-on "$IN_RUNS_ON" --auth "$IN_AUTH" --admin-auth "$IN_ADMIN_AUTH")
         [[ -z $IN_OWNER ]] || args+=(--owner "$IN_OWNER")
         [[ -z $IN_NAME ]] || args+=(--name "$IN_NAME")
         [[ -z $IN_UPSTREAM_BRANCH ]] || args+=(--upstream-branch "$IN_UPSTREAM_BRANCH")
