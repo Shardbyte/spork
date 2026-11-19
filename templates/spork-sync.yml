@@ -1,7 +1,8 @@
 # Managed by spork (https://github.com/Shardbyte/spork).
 # Keeps the `__TARGET_BRANCH__` branch in sync with __UPSTREAM_URL__.
-# Requires the SPORK_TOKEN secret (token with Contents, Workflows,
-# Pull requests and Actions read/write on this repository).
+# Needs Contents, Workflows, Pull requests and Actions read/write on this
+# repository, via the SPORK_TOKEN secret or a GitHub App (SPORK_APP_ID
+# variable + SPORK_APP_PRIVATE_KEY secret).
 name: spork-sync
 
 on:
@@ -28,4 +29,4 @@ jobs:
           target-branch: __TARGET_BRANCH__
           on-update: __ON_UPDATE__
           sync-tags: __SYNC_TAGS__
-          token: ${{ secrets.SPORK_TOKEN }}
+          __AUTH__

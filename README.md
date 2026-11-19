@@ -61,7 +61,8 @@ tab. It uses the `Shardbyte/spork/create@v1` action.
 | `on-update` | `pr` | `pr`, `none`, `fast-forward`, `merge` (see below) |
 | `sync-tags` | `false` | push upstream tags missing here; never moves existing tags |
 | `disable-upstream-workflows` | `true` | disable all other workflows and cancel their pending runs |
-| `token` | — | see [Tokens](#tokens) |
+| `token` | — | personal (or any) token; see [Tokens](#tokens) |
+| `app-id`, `app-private-key` | — | GitHub App instead of `token` |
 
 `on-update` modes:
 
@@ -85,7 +86,7 @@ If upstream rewrites its history, `upstream` is force-updated to match
 The sync job defaults to `ubuntu-latest`. To avoid using GitHub-hosted minutes, pass
 `--runs-on self-hosted` (or a label list such as `"[self-hosted, linux]"`) to
 `spork create`. A self-hosted runner needs `bash`, `git` (2.38+ for `merge`
-mode), `gh`, `awk` and `base64`. Without `gh` the sync fails rather than
+mode), `gh`, `awk`, `base64`, and `openssl` for GitHub App auth. Without `gh` the sync fails rather than
 silently skipping upstream-workflow disabling or PR creation.
 
 Caution: upstream workflows that target `self-hosted` could run on your machine
@@ -104,8 +105,32 @@ which nearly every upstream does, so syncing needs its own token.
 | `SPORK_TOKEN` (sync) | Contents, Workflows, Pull requests, Actions |
 | `SPORK_ADMIN_TOKEN` (create) | Administration, Contents, Workflows, Actions, Secrets; *All repositories* so it can create new ones |
 
-**GitHub App installation token**: planned; any token with the same
-permissions works with the `token` input.
+**GitHub App** (recommended for many repositories): no personal token to
+rotate, and pushes and PRs are attributed to the App. Create an App with the
+repository permissions **Contents**, **Workflows**, **Pull requests** and
+**Actions** (read and write), generate a private key, and install it on the
+private copies (installing on *All repositories* covers future copies too).
+
+```sh
+SPORK_APP_ID=123456 SPORK_APP_PRIVATE_KEY_FILE=app.pem ./scripts/spork create owner/repo --auth app
+```
+
+This stores the `SPORK_APP_ID` variable and `SPORK_APP_PRIVATE_KEY` secret and
+checks that the App can access the new repository. The sync workflow then uses:
+
+```yaml
+- uses: Shardbyte/spork@v1
+  with:
+    upstream-url: owner/repo
+    app-id: ${{ vars.SPORK_APP_ID }}
+    app-private-key: ${{ secrets.SPORK_APP_PRIVATE_KEY }}
+```
+
+Each run signs a short-lived JWT with `openssl` and exchanges it for an
+installation token scoped to the one repository, without extra actions (which
+the Actions allowlist would block). `app-id` may be the numeric App ID or the
+client ID. Creating repositories still needs a personal token: Apps can't
+create repositories in a personal account.
 
 ## Upstream workflows and your Actions minutes
 

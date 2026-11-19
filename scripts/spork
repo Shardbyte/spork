@@ -32,10 +32,16 @@ Options:
                            "[self-hosted, linux]" (default: ubuntu-latest)
   --action-ref REF         sync action to use (default: Shardbyte/spork@v1)
   --sync-tags              also mirror upstream tags
+  --auth token|app         how the sync authenticates (default: token)
   --dry-run                prepare everything locally, create nothing
 
-The sync token is read from the SPORK_TOKEN environment variable and stored
-as the SPORK_TOKEN repository secret. Without it, set the secret yourself.
+Sync credentials are read from the environment and stored in the new repo:
+  --auth token  SPORK_TOKEN                -> secret SPORK_TOKEN
+  --auth app    SPORK_APP_ID               -> variable SPORK_APP_ID
+                SPORK_APP_PRIVATE_KEY      -> secret SPORK_APP_PRIVATE_KEY
+                (or SPORK_APP_PRIVATE_KEY_FILE, a path to the .pem)
+The App must be installed on the new repository (e.g. on all repositories).
+Missing values are reported; set them yourself before the first sync.
 EOF
 }
 
@@ -52,7 +58,7 @@ esac
 
 upstream="" owner="" name="" upstream_branch="" target=upstream base=main
 on_update=pr schedule="23 */6 * * *" action_ref="$SPORK_ACTION_REPO@v1"
-sync_tags=false dry_run=false runs_on=ubuntu-latest
+sync_tags=false dry_run=false runs_on=ubuntu-latest auth=token
 
 need() { [[ $# -ge 2 && -n $2 ]] || spork_die "$1 needs a value"; }
 while [[ $# -gt 0 ]]; do
@@ -67,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --runs-on) need "$@"; runs_on=$2; shift 2 ;;
     --action-ref) need "$@"; action_ref=$2; shift 2 ;;
     --sync-tags) sync_tags=true; shift ;;
+    --auth) need "$@"; auth=$2; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h | --help) usage; exit 0 ;;
     -*) spork_die "unknown option $1" ;;
@@ -79,6 +86,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n $upstream ]] || spork_die "missing <upstream> (try: spork --help)"
+case $auth in
+  token | app) ;;
+  *) spork_die "--auth must be token or app" ;;
+esac
+if [[ $auth == app && -z ${SPORK_APP_PRIVATE_KEY:-} && -n ${SPORK_APP_PRIVATE_KEY_FILE:-} ]]; then
+  SPORK_APP_PRIVATE_KEY=$(<"$SPORK_APP_PRIVATE_KEY_FILE")
+fi
 case $on_update in
   none | pr | fast-forward | merge) ;;
   *) spork_die "--on-update must be one of: none, pr, fast-forward, merge" ;;
@@ -115,9 +129,16 @@ git --git-dir="$work/repo.git" fetch --no-tags "$upstream_url" "+refs/heads/$ups
 upstream_sha=$(git --git-dir="$work/repo.git" rev-parse refs/spork/upstream)
 
 # Render the workflow template. Values are inserted literally via awk.
+# shellcheck disable=SC2016 # literal ${{ }} for the workflow file
+if [[ $auth == app ]]; then
+  # awk -v turns \n into a newline.
+  auth_block='app-id: ${{ vars.SPORK_APP_ID }}\n          app-private-key: ${{ secrets.SPORK_APP_PRIVATE_KEY }}'
+else
+  auth_block='token: ${{ secrets.SPORK_TOKEN }}'
+fi
 render() {
   awk -v url="$upstream_url" -v ub="$upstream_branch" -v tb="$target" \
-    -v mode="$on_update" -v cron="$schedule" -v ref="$action_ref" -v tags="$sync_tags" -v runson="$runs_on" '
+    -v mode="$on_update" -v cron="$schedule" -v ref="$action_ref" -v tags="$sync_tags" -v runson="$runs_on" -v auth="$auth_block" '
     function rep(s, k, v,   i) {
       while ((i = index(s, k)) > 0) s = substr(s, 1, i - 1) v substr(s, i + length(k))
       return s
@@ -127,6 +148,7 @@ render() {
       $0 = rep($0, "__TARGET_BRANCH__", tb); $0 = rep($0, "__ON_UPDATE__", mode)
       $0 = rep($0, "__SCHEDULE__", cron);    $0 = rep($0, "__ACTION_REF__", ref)
       $0 = rep($0, "__SYNC_TAGS__", tags);  $0 = rep($0, "__RUNS_ON__", runson)
+      $0 = rep($0, "__AUTH__", auth)
       print
     }' "$root/templates/spork-sync.yml"
 }
@@ -201,11 +223,33 @@ if ((expected_foreign > 0)); then
   fi
 fi
 
-if [[ -n ${SPORK_TOKEN:-} ]]; then
-  printf '%s' "$SPORK_TOKEN" | gh secret set SPORK_TOKEN -R "$repo"
-  spork_log "stored SPORK_TOKEN secret"
+if [[ $auth == token ]]; then
+  if [[ -n ${SPORK_TOKEN:-} ]]; then
+    printf '%s' "$SPORK_TOKEN" | gh secret set SPORK_TOKEN -R "$repo"
+    spork_log "stored SPORK_TOKEN secret"
+  else
+    spork_warn "SPORK_TOKEN not set — add it before the first sync: gh secret set SPORK_TOKEN -R $repo"
+  fi
 else
-  spork_warn "SPORK_TOKEN not set — add it before the first sync: gh secret set SPORK_TOKEN -R $repo"
+  if [[ -n ${SPORK_APP_ID:-} ]]; then
+    gh variable set SPORK_APP_ID -R "$repo" --body "$SPORK_APP_ID" >/dev/null
+    spork_log "stored SPORK_APP_ID variable"
+  else
+    spork_warn "SPORK_APP_ID not set — add it: gh variable set SPORK_APP_ID -R $repo"
+  fi
+  if [[ -n ${SPORK_APP_PRIVATE_KEY:-} ]]; then
+    printf '%s' "$SPORK_APP_PRIVATE_KEY" | gh secret set SPORK_APP_PRIVATE_KEY -R "$repo"
+    spork_log "stored SPORK_APP_PRIVATE_KEY secret"
+  else
+    spork_warn "SPORK_APP_PRIVATE_KEY not set — add it: gh secret set SPORK_APP_PRIVATE_KEY -R $repo < key.pem"
+  fi
+  if [[ -n ${SPORK_APP_ID:-} && -n ${SPORK_APP_PRIVATE_KEY:-} ]]; then
+    if spork_app_token "$SPORK_APP_ID" "$SPORK_APP_PRIVATE_KEY" "$repo"; then
+      spork_log "verified: GitHub App $SPORK_APP_ID can access $repo"
+    else
+      spork_warn "install the GitHub App on $repo before the first sync"
+    fi
+  fi
 fi
 
 url="${GITHUB_SERVER_URL:-https://github.com}/$repo"

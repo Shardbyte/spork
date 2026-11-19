@@ -52,8 +52,20 @@ inputs:
   admin-token:
     description: Token that can create repositories and manage their settings, secrets and workflows.
     required: true
+  auth:
+    description: How the sync authenticates, token or app.
+    required: false
+    default: token
   sync-token:
-    description: Token stored as the SPORK_TOKEN secret of the new repository. Leave empty to set it yourself.
+    description: (auth token) Stored as the SPORK_TOKEN secret of the new repository. Leave empty to set it yourself.
+    required: false
+    default: ""
+  app-id:
+    description: (auth app) GitHub App ID or client ID, stored as the SPORK_APP_ID variable.
+    required: false
+    default: ""
+  app-private-key:
+    description: (auth app) GitHub App private key, stored as the SPORK_APP_PRIVATE_KEY secret.
     required: false
     default: ""
 
@@ -73,6 +85,9 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.admin-token }}
         SPORK_TOKEN: ${{ inputs.sync-token }}
+        SPORK_APP_ID: ${{ inputs.app-id }}
+        SPORK_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        IN_AUTH: ${{ inputs.auth }}
         IN_UPSTREAM: ${{ inputs.upstream }}
         IN_OWNER: ${{ inputs.owner }}
         IN_NAME: ${{ inputs.name }}
@@ -87,7 +102,7 @@ runs:
       run: |
         args=(create "$IN_UPSTREAM"
           --target-branch "$IN_TARGET_BRANCH" --base-branch "$IN_BASE_BRANCH"
-          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF" --runs-on "$IN_RUNS_ON")
+          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF" --runs-on "$IN_RUNS_ON" --auth "$IN_AUTH")
         [[ -z $IN_OWNER ]] || args+=(--owner "$IN_OWNER")
         [[ -z $IN_NAME ]] || args+=(--name "$IN_NAME")
         [[ -z $IN_UPSTREAM_BRANCH ]] || args+=(--upstream-branch "$IN_UPSTREAM_BRANCH")

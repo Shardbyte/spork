@@ -36,7 +36,21 @@ if [[ -z $SELF_WF && -n ${GITHUB_WORKFLOW_REF:-} ]]; then
 fi
 SELF_WF=${SELF_WF:-.github/workflows/spork-sync.yml}
 
-spork_set_auth "${SPORK_TOKEN:-}"
+APP_ID=${SPORK_APP_ID:-}
+APP_KEY=${SPORK_APP_PRIVATE_KEY:-}
+TOKEN=${SPORK_TOKEN:-}
+if [[ -n $APP_ID || -n $APP_KEY ]]; then
+  [[ -n $APP_ID && -n $APP_KEY ]] || spork_die "app-id and app-private-key must be set together"
+  [[ -z $TOKEN ]] || spork_die "set either token or app-id/app-private-key, not both"
+  [[ -n $REPO ]] || spork_die "cannot determine this repository for GitHub App authentication"
+  spork_have_gh || spork_die "the GitHub CLI (gh) is required for GitHub App authentication"
+  spork_app_token "$APP_ID" "$APP_KEY" "$REPO" || spork_die "GitHub App authentication failed"
+  TOKEN=$SPORK_APP_TOKEN
+  spork_log "authenticated as GitHub App $APP_ID"
+elif [[ -z $TOKEN && -n ${GITHUB_ACTIONS:-} ]]; then
+  spork_die "set either token, or app-id and app-private-key"
+fi
+spork_set_auth "$TOKEN"
 
 gh_ok=false
 if [[ -n $REPO ]] && spork_have_gh; then gh_ok=true; fi

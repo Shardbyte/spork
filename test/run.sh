@@ -21,7 +21,17 @@ while read -r v; do unset "$v"; done < <(compgen -e GITHUB_)
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
+# GitHub App token exchange: capture the JWT, hand out a fake installation.
+case "$*" in
+  *"repos/test/repo/installation"*)
+    [[ -z ${STUB_APP_FAIL:-} ]] || exit 1
+    printf '%s\n' "$*" | sed -n 's/.*Authorization: Bearer \([^ ]*\).*/\1/p' >"$GH_JWT"
+    echo 42; exit 0 ;;
+  *"app/installations/42/access_tokens"*)
+    printf '%s\n' "$*" >>"$GH_LOG"; echo ghs_minted; exit 0 ;;
+esac
 printf '%s\n' "$*" >>"$GH_LOG"
+printf '%s\n' "${GH_TOKEN:-}" >>"$GH_TOKENS"
 [[ $2 != --paginate ]] || set -- "$1" "${@:3}"
 case "$1 $2" in
   "pr list") [[ -z ${STUB_PR_NUMBER:-} ]] || printf '%s https://github.com/test/repo/pull/%s\n' "$STUB_PR_NUMBER" "$STUB_PR_NUMBER" ;;
@@ -33,7 +43,7 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$tmp/bin/gh"
-export PATH="$tmp/bin:$PATH" GH_LOG="$tmp/gh.log"
+export PATH="$tmp/bin:$PATH" GH_LOG="$tmp/gh.log" GH_JWT="$tmp/jwt" GH_TOKENS="$tmp/tokens"
 
 # --- helpers ---------------------------------------------------------------
 pass=0 fail=0
@@ -56,7 +66,7 @@ ref() { git --git-dir="$1" rev-parse --verify -q "refs/heads/$2" || true; }
 # sync [ENV=VALUE...] — run sync.sh, outputs in $out.
 out="$tmp/out"
 sync() {
-  : >"$out" && : >"$GH_LOG"
+  : >"$out" && : >"$GH_LOG" && : >"$GH_TOKENS" && : >"$GH_JWT"
   env SPORK_UPSTREAM_URL="$up" SPORK_ORIGIN_URL="$origin" SPORK_REPO=test/repo \
     SPORK_DISABLE_UPSTREAM_WORKFLOWS=false SPORK_SETTLE_SECONDS=0 \
     GITHUB_OUTPUT="$out" "$@" "$root/scripts/sync.sh" 2>"$tmp/stderr" ||
@@ -195,6 +205,27 @@ check "dynamic skipped" '! grep -q "actions/workflows/3/disable" "$GH_LOG"'
 check "already disabled skipped" '! grep -q "actions/workflows/4/disable" "$GH_LOG"'
 check "foreign run cancelled" 'grep -q "actions/runs/100/cancel" "$GH_LOG"'
 check "own run kept" '! grep -q "actions/runs/101/cancel" "$GH_LOG"'
+
+echo "GitHub App authentication"
+openssl genrsa -out "$tmp/app.pem" 2048 2>/dev/null
+openssl rsa -in "$tmp/app.pem" -pubout -out "$tmp/app.pub" 2>/dev/null
+b64d() { local s; s=$(tr '_-' '/+' <<<"$1"); while (( ${#s} % 4 )); do s+='='; done; base64 -d <<<"$s"; }
+STUB_AHEAD=0 sync SPORK_APP_ID=123456 SPORK_APP_PRIVATE_KEY="$(cat "$tmp/app.pem")"
+jwt=$(cat "$GH_JWT")
+IFS=. read -r jh jp js <<<"$jwt"
+check "JWT header is RS256" '[[ $(b64d "$jh") == {\"alg\":\"RS256\",\"typ\":\"JWT\"} ]]'
+check "JWT iss is the numeric app id" 'b64d "$jp" | grep -q "\"iss\":123456}"'
+check "JWT lifetime <= 10 minutes" 'b64d "$jp" | awk -F"[:,}]" "{ exit !(\$4 - \$2 <= 600) }"'
+check "JWT signature verifies" 'b64d "$js" >"$tmp/sig"; printf %s "$jh.$jp" | openssl dgst -sha256 -verify "$tmp/app.pub" -signature "$tmp/sig" >/dev/null'
+check "token scoped to the repo" 'grep -q "access_tokens -f repositories\[\]=repo" "$GH_LOG"'
+check "minted token used for gh calls" '[[ $(sort -u "$GH_TOKENS") == ghs_minted ]]'
+STUB_AHEAD=0 sync SPORK_APP_ID=Iv23liAbc SPORK_APP_PRIVATE_KEY="$(awk '{printf "%s\\n", $0}' "$tmp/app.pem")"
+check "client id as string iss; literal \\n key accepted" 'b64d "$(cut -d. -f2 "$GH_JWT")" | grep -q "\"iss\":\"Iv23liAbc\"}"'
+check "app-id without key rejected" '! sync SPORK_APP_ID=1 >/dev/null 2>&1'
+check "token and app together rejected" '! sync SPORK_APP_ID=1 SPORK_APP_PRIVATE_KEY="$(cat "$tmp/app.pem")" SPORK_TOKEN=x >/dev/null 2>&1'
+check "bad key rejected" '! sync SPORK_APP_ID=1 SPORK_APP_PRIVATE_KEY=garbage >/dev/null 2>&1'
+check "App not installed rejected" '! STUB_APP_FAIL=1 sync SPORK_APP_ID=1 SPORK_APP_PRIVATE_KEY="$(cat "$tmp/app.pem")" >/dev/null 2>&1'
+check "no credentials in Actions rejected" '! sync GITHUB_ACTIONS=true >/dev/null 2>&1'
 
 echo "input validation"
 check "bad on-update rejected" '! sync SPORK_ON_UPDATE=bogus >/dev/null 2>&1'

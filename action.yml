@@ -39,10 +39,23 @@ inputs:
     default: "true"
   token:
     description: >-
-      Personal access token or GitHub App installation token with Contents,
-      Workflows, Pull requests and Actions read/write on this repository.
-      The default GITHUB_TOKEN cannot push upstream changes to workflow files.
-    required: true
+      Personal access token (or any token) with Contents, Workflows, Pull
+      requests and Actions read/write on this repository. The default
+      GITHUB_TOKEN cannot push upstream changes to workflow files.
+      Set this, or app-id and app-private-key.
+    required: false
+    default: ""
+  app-id:
+    description: >-
+      GitHub App ID or client ID. With app-private-key, an installation token
+      for this repository is created for the run. The App needs the same
+      permissions as token and must be installed on this repository.
+    required: false
+    default: ""
+  app-private-key:
+    description: The GitHub App's private key (PEM).
+    required: false
+    default: ""
 
 outputs:
   changed:
@@ -81,4 +94,6 @@ runs:
         SPORK_SYNC_TAGS: ${{ inputs.sync-tags }}
         SPORK_DISABLE_UPSTREAM_WORKFLOWS: ${{ inputs.disable-upstream-workflows }}
         SPORK_TOKEN: ${{ inputs.token }}
+        SPORK_APP_ID: ${{ inputs.app-id }}
+        SPORK_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
       run: '"$GITHUB_ACTION_PATH/scripts/sync.sh"'

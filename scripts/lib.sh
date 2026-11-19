@@ -134,3 +134,51 @@ spork_disable_foreign_workflows() {
     fi
   done <<<"$runs"
 }
+
+# --- GitHub App authentication ----------------------------------------------
+
+spork_b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# spork_app_token APP_ID PRIVATE_KEY REPO
+# Mints an installation token for REPO into SPORK_APP_TOKEN (a variable, not
+# stdout, so the ::add-mask:: command reaches the runner before any use).
+# APP_ID may be the numeric App ID or the App's client ID. Returns non-zero
+# with a message on failure.
+SPORK_APP_TOKEN=""
+spork_app_token() {
+  local app_id=$1 key=$2 repo=$3 now iss header payload sig jwt keyfile inst
+  SPORK_APP_TOKEN=""
+  command -v openssl >/dev/null || { spork_warn "openssl is required for GitHub App authentication"; return 1; }
+  # Secrets pasted with literal "\n" instead of newlines.
+  if [[ $key != *$'\n'* && $key == *'\n'* ]]; then key=${key//\\n/$'\n'}; fi
+
+  now=$(date +%s)
+  if [[ $app_id =~ ^[0-9]+$ ]]; then iss=$app_id; else iss="\"$app_id\""; fi
+  header=$(printf '{"alg":"RS256","typ":"JWT"}' | spork_b64url)
+  payload=$(printf '{"iat":%d,"exp":%d,"iss":%s}' $((now - 60)) $((now + 540)) "$iss" | spork_b64url)
+  keyfile=$(mktemp)
+  chmod 600 "$keyfile"
+  printf '%s\n' "$key" >"$keyfile"
+  if ! sig=$(printf '%s.%s' "$header" "$payload" |
+    openssl dgst -sha256 -sign "$keyfile" -binary 2>/dev/null | spork_b64url) || [[ -z $sig ]]; then
+    rm -f "$keyfile"
+    spork_warn "could not sign with the App private key (expected a PEM RSA key)"
+    return 1
+  fi
+  rm -f "$keyfile"
+  jwt="$header.$payload.$sig"
+  if [[ -n ${GITHUB_ACTIONS:-} ]]; then printf '::add-mask::%s\n' "$jwt"; fi
+
+  if ! inst=$(GH_TOKEN=$jwt gh api -H "Authorization: Bearer $jwt" "repos/$repo/installation" --jq .id); then
+    spork_warn "GitHub App $app_id is not installed on $repo (or the key/ID is wrong)"
+    return 1
+  fi
+  if ! SPORK_APP_TOKEN=$(GH_TOKEN=$jwt gh api -X POST -H "Authorization: Bearer $jwt" \
+    "app/installations/$inst/access_tokens" -f "repositories[]=${repo#*/}" --jq .token) ||
+    [[ -z $SPORK_APP_TOKEN ]]; then
+    SPORK_APP_TOKEN=""
+    spork_warn "could not create an installation token for $repo"
+    return 1
+  fi
+  if [[ -n ${GITHUB_ACTIONS:-} ]]; then printf '::add-mask::%s\n' "$SPORK_APP_TOKEN"; fi
+}
