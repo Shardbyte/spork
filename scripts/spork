@@ -45,9 +45,11 @@ Sync credentials are read from the environment and stored in the new repo:
                 SPORK_APP_PRIVATE_KEY      -> secret SPORK_APP_PRIVATE_KEY
                 (or SPORK_APP_PRIVATE_KEY_FILE, a path to the .pem)
 The App must be installed on the new repository (e.g. on all repositories).
-In an organization, credentials that already exist as org-level secrets /
-variables are not copied into the repository (for "selected repositories"
-visibility, the new repository is added to the list).
+In an organization on a paid plan, credentials that already exist as
+org-level secrets / variables are not copied into the repository (for
+"selected repositories" visibility, the new repository is added to the list).
+On GitHub Free, private repositories can't use org-level credentials, so they
+are always stored in the repository.
 Missing values are reported; set them yourself before the first sync.
 EOF
 }
@@ -138,6 +140,14 @@ if [[ -z $upstream_branch ]]; then
 fi
 if ! $dry_run && gh api "repos/$repo" >/dev/null 2>&1; then
   spork_die "$repo already exists"
+fi
+
+# Org-level secrets/variables reach private repositories only on paid plans
+# (not GitHub Free). Use them only when the plan is known to allow it.
+org_credentials=false
+if [[ $owner_type == Organization ]]; then
+  org_plan=$(gh api "orgs/$owner" --jq '.plan.name // ""' 2>/dev/null || true)
+  if [[ -n $org_plan && $org_plan != free ]]; then org_credentials=true; fi
 fi
 
 # Organization Actions policy: fail before creating anything if it would
@@ -283,7 +293,11 @@ fi
 # credential; otherwise store it in the repository.
 store_credential() {
   local kind=$1 cname=$2 value=$3 vis
-  if [[ $owner_type == Organization ]] &&
+  if [[ $owner_type == Organization ]] && ! $org_credentials &&
+    gh api "orgs/$owner/actions/${kind}s/$cname" >/dev/null 2>&1; then
+    spork_log "org $kind $cname exists, but org credentials don't reach private repositories on the ${org_plan:-current} plan; storing it in the repository"
+  fi
+  if $org_credentials &&
     vis=$(gh api "orgs/$owner/actions/${kind}s/$cname" --jq .visibility 2>/dev/null); then
     if [[ $vis == selected ]]; then
       if gh api -X PUT "orgs/$owner/actions/${kind}s/$cname/repositories/$repo_id" >/dev/null 2>&1; then
