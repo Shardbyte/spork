@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# spork — create a private copy of a public repository that keeps itself in
+# sync with upstream via the spork sync action.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+root=$(dirname "$here")
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+source "$here/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: spork create <upstream> [options]
+
+Create a private repository containing <upstream>'s default branch, with:
+  - the upstream history on the target branch (default: upstream)
+  - the same history plus a spork-sync workflow on the base branch (default: main)
+  - Actions restricted to the spork action, and upstream's workflows disabled
+
+<upstream> is owner/repo or a git URL. Authentication uses gh (GH_TOKEN or
+`gh auth login`); the token needs repo creation, admin and workflow rights.
+
+Options:
+  --owner OWNER            user/org to create the repo under (default: you)
+  --name NAME              repository name (default: upstream's name)
+  --upstream-branch B      upstream branch to track (default: upstream's default)
+  --target-branch B        branch that mirrors upstream (default: upstream)
+  --base-branch B          your working/default branch (default: main)
+  --on-update MODE         pr | none | fast-forward | merge (default: pr)
+  --schedule CRON          sync schedule (default: "23 */6 * * *")
+  --action-ref REF         sync action to use (default: Shardbyte/spork@v1)
+  --sync-tags              also mirror upstream tags
+  --dry-run                prepare everything locally, create nothing
+
+The sync token is read from the SPORK_TOKEN environment variable and stored
+as the SPORK_TOKEN repository secret. Without it, set the secret yourself.
+EOF
+}
+
+cmd=${1:-}
+[[ $# -eq 0 ]] || shift
+case $cmd in
+  create) ;;
+  -h | --help | help | "")
+    usage
+    exit 0
+    ;;
+  *) spork_die "unknown command '$cmd' (try: spork --help)" ;;
+esac
+
+upstream="" owner="" name="" upstream_branch="" target=upstream base=main
+on_update=pr schedule="23 */6 * * *" action_ref="$SPORK_ACTION_REPO@v1"
+sync_tags=false dry_run=false
+
+need() { [[ $# -ge 2 && -n $2 ]] || spork_die "$1 needs a value"; }
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --owner) need "$@"; owner=$2; shift 2 ;;
+    --name) need "$@"; name=$2; shift 2 ;;
+    --upstream-branch) need "$@"; upstream_branch=$2; shift 2 ;;
+    --target-branch) need "$@"; target=$2; shift 2 ;;
+    --base-branch) need "$@"; base=$2; shift 2 ;;
+    --on-update) need "$@"; on_update=$2; shift 2 ;;
+    --schedule) need "$@"; schedule=$2; shift 2 ;;
+    --action-ref) need "$@"; action_ref=$2; shift 2 ;;
+    --sync-tags) sync_tags=true; shift ;;
+    --dry-run) dry_run=true; shift ;;
+    -h | --help) usage; exit 0 ;;
+    -*) spork_die "unknown option $1" ;;
+    *)
+      [[ -z $upstream ]] || spork_die "unexpected argument $1"
+      upstream=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n $upstream ]] || spork_die "missing <upstream> (try: spork --help)"
+case $on_update in
+  none | pr | fast-forward | merge) ;;
+  *) spork_die "--on-update must be one of: none, pr, fast-forward, merge" ;;
+esac
+[[ $target != "$base" ]] || spork_die "--target-branch and --base-branch must differ"
+[[ $action_ref == */*@* ]] || spork_die "--action-ref must look like owner/repo@ref"
+spork_have_gh || spork_die "the GitHub CLI (gh) is required"
+
+upstream_url=$(spork_normalize_url "$upstream")
+if [[ -z $name ]]; then
+  name=$(basename "${upstream_url%/}")
+  name=${name%.git}
+fi
+[[ -n $owner ]] || owner=$(gh api user --jq .login)
+repo="$owner/$name"
+origin_url="${GITHUB_SERVER_URL:-https://github.com}/$repo.git"
+
+if [[ -z $upstream_branch ]]; then
+  upstream_branch=$(spork_default_branch git "$upstream_url")
+  [[ -n $upstream_branch ]] || spork_die "could not determine default branch of $upstream_url"
+fi
+if ! $dry_run && gh repo view "$repo" >/dev/null 2>&1; then
+  spork_die "$repo already exists"
+fi
+
+# ---------------------------------------------------------------------------
+# Prepare history locally.
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+git init -q --bare "$work/repo.git"
+spork_log "fetching $upstream_url $upstream_branch (full history)"
+git --git-dir="$work/repo.git" fetch --no-tags "$upstream_url" "+refs/heads/$upstream_branch:refs/spork/upstream"
+upstream_sha=$(git --git-dir="$work/repo.git" rev-parse refs/spork/upstream)
+
+# Render the workflow template. Values are inserted literally via awk.
+render() {
+  awk -v url="$upstream_url" -v ub="$upstream_branch" -v tb="$target" \
+    -v mode="$on_update" -v cron="$schedule" -v ref="$action_ref" -v tags="$sync_tags" '
+    function rep(s, k, v,   i) {
+      while ((i = index(s, k)) > 0) s = substr(s, 1, i - 1) v substr(s, i + length(k))
+      return s
+    }
+    {
+      $0 = rep($0, "__UPSTREAM_URL__", url); $0 = rep($0, "__UPSTREAM_BRANCH__", ub)
+      $0 = rep($0, "__TARGET_BRANCH__", tb); $0 = rep($0, "__ON_UPDATE__", mode)
+      $0 = rep($0, "__SCHEDULE__", cron);    $0 = rep($0, "__ACTION_REF__", ref)
+      $0 = rep($0, "__SYNC_TAGS__", tags)
+      print
+    }' "$root/templates/spork-sync.yml"
+}
+render >"$work/spork-sync.yml"
+self_wf=.github/workflows/spork-sync.yml
+
+spork_ensure_identity
+export GIT_INDEX_FILE="$work/index"
+git --git-dir="$work/repo.git" read-tree "$upstream_sha"
+blob=$(git --git-dir="$work/repo.git" hash-object -w "$work/spork-sync.yml")
+git --git-dir="$work/repo.git" update-index --add --cacheinfo "100644,$blob,$self_wf"
+tree=$(git --git-dir="$work/repo.git" write-tree)
+unset GIT_INDEX_FILE
+base_sha=$(git --git-dir="$work/repo.git" commit-tree "$tree" -p "$upstream_sha" \
+  -m "Add spork sync workflow" \
+  -m "Keeps '$target' in sync with $upstream_url ($upstream_branch).")
+
+# Upstream workflows that will need disabling.
+expected_foreign=$(git --git-dir="$work/repo.git" ls-tree --name-only "$base_sha" .github/workflows/ |
+  grep -E '\.ya?ml$' | grep -cvxF "$self_wf" || true)
+
+if $dry_run; then
+  spork_log "dry run — would create private repo $repo"
+  spork_log "  $target  <- $upstream_sha (upstream $upstream_branch)"
+  spork_log "  $base    <- $base_sha (+ $self_wf)"
+  spork_log "  upstream workflows to disable: $expected_foreign"
+  printf '\n--- %s ---\n' "$self_wf"
+  cat "$work/spork-sync.yml"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Create and populate the repository.
+
+api_put() { gh api -X PUT "repos/$repo/$1" --input - >/dev/null <<<"$2"; }
+
+spork_log "creating private repository $repo"
+gh repo create "$repo" --private --description "Private copy of $upstream_url (managed by spork)" >/dev/null
+
+# Push with Actions disabled so upstream workflows never get triggered.
+api_put actions/permissions '{"enabled": false}'
+
+spork_set_auth "${GH_TOKEN:-$(gh auth token)}"
+spork_log "pushing $target and $base"
+ogit --git-dir="$work/repo.git" push -q "$origin_url" \
+  "$upstream_sha:refs/heads/$target" "$base_sha:refs/heads/$base"
+gh repo edit "$repo" --default-branch "$base" >/dev/null
+
+spork_log "restricting Actions to ${action_ref%@*}"
+api_put actions/permissions '{"enabled": true, "allowed_actions": "selected"}'
+api_put actions/permissions/selected-actions \
+  "{\"github_owned_allowed\": false, \"verified_allowed\": false, \"patterns_allowed\": [\"${action_ref%@*}@*\"]}"
+api_put actions/permissions/workflow \
+  '{"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false}'
+
+# Workflows register asynchronously once Actions is enabled.
+if ((expected_foreign > 0)); then
+  spork_log "disabling $expected_foreign upstream workflow(s)"
+  for _ in $(seq 1 12); do
+    spork_disable_foreign_workflows "$repo" "$self_wf"
+    ((SPORK_FOREIGN_SEEN >= expected_foreign)) && break
+    sleep 5
+  done
+  if ((SPORK_FOREIGN_SEEN < expected_foreign)); then
+    spork_warn "only $SPORK_FOREIGN_SEEN of $expected_foreign upstream workflows registered yet; the first sync run will disable the rest"
+  fi
+fi
+
+if [[ -n ${SPORK_TOKEN:-} ]]; then
+  printf '%s' "$SPORK_TOKEN" | gh secret set SPORK_TOKEN -R "$repo"
+  spork_log "stored SPORK_TOKEN secret"
+else
+  spork_warn "SPORK_TOKEN not set — add it before the first sync: gh secret set SPORK_TOKEN -R $repo"
+fi
+
+url="${GITHUB_SERVER_URL:-https://github.com}/$repo"
+spork_output repository "$repo"
+spork_output url "$url"
+spork_log "done: $url"

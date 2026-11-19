@@ -1,0 +1,90 @@
+name: spork create
+description: Create a private copy of a public repository that keeps itself in sync with upstream.
+author: Shardbyte
+branding:
+  icon: copy
+  color: purple
+
+inputs:
+  upstream:
+    description: Upstream repository, as owner/repo or a git URL.
+    required: true
+  owner:
+    description: User or organization to create the copy under. Defaults to the admin-token's user.
+    required: false
+    default: ""
+  name:
+    description: Name of the new repository. Defaults to upstream's name.
+    required: false
+    default: ""
+  upstream-branch:
+    description: Upstream branch to track. Defaults to upstream's default branch.
+    required: false
+    default: ""
+  target-branch:
+    description: Branch that mirrors upstream.
+    required: false
+    default: upstream
+  base-branch:
+    description: Working/default branch of the new repository.
+    required: false
+    default: main
+  on-update:
+    description: pr | none | fast-forward | merge
+    required: false
+    default: pr
+  schedule:
+    description: Cron schedule for the sync workflow.
+    required: false
+    default: "23 */6 * * *"
+  sync-tags:
+    description: Also mirror upstream tags.
+    required: false
+    default: "false"
+  action-ref:
+    description: Sync action the new repository uses.
+    required: false
+    default: Shardbyte/spork@v1
+  admin-token:
+    description: Token that can create repositories and manage their settings, secrets and workflows.
+    required: true
+  sync-token:
+    description: Token stored as the SPORK_TOKEN secret of the new repository. Leave empty to set it yourself.
+    required: false
+    default: ""
+
+outputs:
+  repository:
+    description: owner/name of the created repository.
+    value: ${{ steps.create.outputs.repository }}
+  url:
+    description: URL of the created repository.
+    value: ${{ steps.create.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - id: create
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.admin-token }}
+        SPORK_TOKEN: ${{ inputs.sync-token }}
+        IN_UPSTREAM: ${{ inputs.upstream }}
+        IN_OWNER: ${{ inputs.owner }}
+        IN_NAME: ${{ inputs.name }}
+        IN_UPSTREAM_BRANCH: ${{ inputs.upstream-branch }}
+        IN_TARGET_BRANCH: ${{ inputs.target-branch }}
+        IN_BASE_BRANCH: ${{ inputs.base-branch }}
+        IN_ON_UPDATE: ${{ inputs.on-update }}
+        IN_SCHEDULE: ${{ inputs.schedule }}
+        IN_SYNC_TAGS: ${{ inputs.sync-tags }}
+        IN_ACTION_REF: ${{ inputs.action-ref }}
+      run: |
+        args=(create "$IN_UPSTREAM"
+          --target-branch "$IN_TARGET_BRANCH" --base-branch "$IN_BASE_BRANCH"
+          --on-update "$IN_ON_UPDATE" --schedule "$IN_SCHEDULE" --action-ref "$IN_ACTION_REF")
+        [[ -z $IN_OWNER ]] || args+=(--owner "$IN_OWNER")
+        [[ -z $IN_NAME ]] || args+=(--name "$IN_NAME")
+        [[ -z $IN_UPSTREAM_BRANCH ]] || args+=(--upstream-branch "$IN_UPSTREAM_BRANCH")
+        [[ $IN_SYNC_TAGS != true ]] || args+=(--sync-tags)
+        "$GITHUB_ACTION_PATH/../scripts/spork" "${args[@]}"

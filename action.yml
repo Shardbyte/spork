@@ -1,0 +1,84 @@
+name: spork sync
+description: Keep a branch of a private repository in sync with a public upstream repository.
+author: Shardbyte
+branding:
+  icon: git-branch
+  color: purple
+
+inputs:
+  upstream-url:
+    description: Upstream repository, as owner/repo or a git URL.
+    required: true
+  upstream-branch:
+    description: Upstream branch to mirror. Defaults to upstream's default branch.
+    required: false
+    default: ""
+  target-branch:
+    description: Branch in this repository that mirrors upstream. It is force-updated; don't commit to it.
+    required: false
+    default: upstream
+  base-branch:
+    description: Branch that receives updates (PR / fast-forward / merge). Defaults to this repository's default branch.
+    required: false
+    default: ""
+  on-update:
+    description: >-
+      What to do with the base branch when upstream changed:
+      pr (open or update a pull request), none, fast-forward (falls back to pr
+      when the base branch has diverged), or merge (merge commit when clean,
+      otherwise pr).
+    required: false
+    default: pr
+  sync-tags:
+    description: Also push upstream tags that don't exist here yet. Existing tags are never moved.
+    required: false
+    default: "false"
+  disable-upstream-workflows:
+    description: Disable every workflow except this one and cancel their pending runs.
+    required: false
+    default: "true"
+  token:
+    description: >-
+      Personal access token or GitHub App installation token with Contents,
+      Workflows, Pull requests and Actions read/write on this repository.
+      The default GITHUB_TOKEN cannot push upstream changes to workflow files.
+    required: true
+
+outputs:
+  changed:
+    description: Whether anything was updated (true/false).
+    value: ${{ steps.sync.outputs.changed }}
+  result:
+    description: unchanged | updated | pr-opened | pr-updated | fast-forwarded | merged
+    value: ${{ steps.sync.outputs.result }}
+  upstream-sha:
+    description: Upstream commit now on the target branch.
+    value: ${{ steps.sync.outputs.upstream-sha }}
+  previous-sha:
+    description: Commit the target branch pointed to before the sync (empty if it didn't exist).
+    value: ${{ steps.sync.outputs.previous-sha }}
+  commits:
+    description: Number of new upstream commits.
+    value: ${{ steps.sync.outputs.commits }}
+  forced:
+    description: Whether upstream history was rewritten.
+    value: ${{ steps.sync.outputs.forced }}
+  pr-url:
+    description: URL of the opened/updated pull request, if any.
+    value: ${{ steps.sync.outputs.pr-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: sync
+      shell: bash
+      env:
+        SPORK_UPSTREAM_URL: ${{ inputs.upstream-url }}
+        SPORK_UPSTREAM_BRANCH: ${{ inputs.upstream-branch }}
+        SPORK_TARGET_BRANCH: ${{ inputs.target-branch }}
+        SPORK_BASE_BRANCH: ${{ inputs.base-branch }}
+        SPORK_ON_UPDATE: ${{ inputs.on-update }}
+        SPORK_SYNC_TAGS: ${{ inputs.sync-tags }}
+        SPORK_DISABLE_UPSTREAM_WORKFLOWS: ${{ inputs.disable-upstream-workflows }}
+        SPORK_TOKEN: ${{ inputs.token }}
+      run: '"$GITHUB_ACTION_PATH/scripts/sync.sh"'

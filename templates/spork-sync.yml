@@ -1,0 +1,31 @@
+# Managed by spork (https://github.com/Shardbyte/spork).
+# Keeps the `__TARGET_BRANCH__` branch in sync with __UPSTREAM_URL__.
+# Requires the SPORK_TOKEN secret (token with Contents, Workflows,
+# Pull requests and Actions read/write on this repository).
+name: spork-sync
+
+on:
+  schedule:
+    - cron: "__SCHEDULE__"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: __ACTION_REF__
+        with:
+          upstream-url: __UPSTREAM_URL__
+          upstream-branch: __UPSTREAM_BRANCH__
+          target-branch: __TARGET_BRANCH__
+          on-update: __ON_UPDATE__
+          sync-tags: __SYNC_TAGS__
+          token: ${{ secrets.SPORK_TOKEN }}

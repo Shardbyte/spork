@@ -1,0 +1,40 @@
+# Example "control repo" workflow: create private copies from the Actions tab.
+#
+# Put this in a PRIVATE repository. Workflow logs in a public repository are
+# public and would reveal which upstreams you copy and under which names.
+#
+# Secrets:
+#   SPORK_ADMIN_TOKEN  can create repositories and manage their settings,
+#                      secrets and workflows (see README).
+#   SPORK_TOKEN        stored as SPORK_TOKEN in each new copy, used by syncs.
+name: spork-create
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Upstream repository (owner/repo or URL)
+        required: true
+      name:
+        description: Name for the private copy (default upstream's name)
+        required: false
+      on-update:
+        description: What to do with main when upstream changes
+        type: choice
+        options: [pr, none, fast-forward, merge]
+        default: pr
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Shardbyte/spork/create@v1
+        with:
+          upstream: ${{ inputs.upstream }}
+          name: ${{ inputs.name }}
+          on-update: ${{ inputs.on-update }}
+          admin-token: ${{ secrets.SPORK_ADMIN_TOKEN }}
+          sync-token: ${{ secrets.SPORK_TOKEN }}
