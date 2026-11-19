@@ -80,6 +80,18 @@ Outputs: `changed`, `result` (`unchanged`, `updated`, `pr-opened`,
 If upstream rewrites its history, `upstream` is force-updated to match
 (`forced=true`); `main` is never force-pushed.
 
+## Runners
+
+The sync job defaults to `ubuntu-latest`. To avoid using GitHub-hosted minutes, pass
+`--runs-on self-hosted` (or a label list such as `"[self-hosted, linux]"`) to
+`spork create`. A self-hosted runner needs `bash`, `git` (2.38+ for `merge`
+mode), `gh`, `awk` and `base64`. Without `gh` the sync fails rather than
+silently skipping upstream-workflow disabling or PR creation.
+
+Caution: upstream workflows that target `self-hosted` could run on your machine
+in the short window before spork disables them (see below). Use a dedicated,
+unprivileged runner for spork repositories.
+
 ## Tokens
 
 The default `GITHUB_TOKEN` can't push commits that modify `.github/workflows/`,

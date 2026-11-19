@@ -40,6 +40,10 @@ spork_set_auth "${SPORK_TOKEN:-}"
 
 gh_ok=false
 if [[ -n $REPO ]] && spork_have_gh; then gh_ok=true; fi
+# Fail loudly rather than silently skipping a safety feature.
+if ! $gh_ok && [[ -n $REPO && ($DISABLE_WF == true || $ON_UPDATE == pr) ]]; then
+  spork_die "the GitHub CLI (gh) is required for disable-upstream-workflows and on-update: pr, but is not installed on this runner. Install it (https://cli.github.com) or set disable-upstream-workflows: false and on-update: none/fast-forward/merge."
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve branches and current state.
