@@ -13,7 +13,9 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 # Like many real setups: bare repos must be addressed with --git-dir.
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit
-unset GITHUB_ACTIONS GITHUB_OUTPUT GITHUB_STEP_SUMMARY GITHUB_REPOSITORY GH_TOKEN
+# Running inside Actions must not leak into the tests.
+unset GH_TOKEN
+while read -r v; do unset "$v"; done < <(compgen -e GITHUB_)
 
 # --- stub gh ---------------------------------------------------------------
 mkdir -p "$tmp/bin"

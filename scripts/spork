@@ -172,6 +172,11 @@ ogit --git-dir="$work/repo.git" push -q "$origin_url" \
   "$upstream_sha:refs/heads/$target" "$base_sha:refs/heads/$base"
 gh repo edit "$repo" --default-branch "$base" >/dev/null
 
+# Push events are processed asynchronously; events handled while Actions is
+# still disabled are dropped. Give them time before re-enabling.
+spork_log "waiting for push events to settle"
+sleep "${SPORK_SETTLE_SECONDS:-20}"
+
 spork_log "restricting Actions to ${action_ref%@*}"
 api_put actions/permissions '{"enabled": true, "allowed_actions": "selected"}'
 api_put actions/permissions/selected-actions \
@@ -180,11 +185,12 @@ api_put actions/permissions/workflow \
   '{"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false}'
 
 # Workflows register asynchronously once Actions is enabled.
+# Keep sweeping for a while: disables workflows as they register and
+# cancels any run that slipped through.
 if ((expected_foreign > 0)); then
   spork_log "disabling $expected_foreign upstream workflow(s)"
-  for _ in $(seq 1 12); do
+  for _ in $(seq 1 8); do
     spork_disable_foreign_workflows "$repo" "$self_wf"
-    ((SPORK_FOREIGN_SEEN >= expected_foreign)) && break
     sleep 5
   done
   if ((SPORK_FOREIGN_SEEN < expected_foreign)); then
