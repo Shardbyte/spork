@@ -132,6 +132,35 @@ the Actions allowlist would block). `app-id` may be the numeric App ID or the
 client ID. Creating repositories still needs a personal token: Apps can't
 create repositories in a personal account.
 
+## Organizations
+
+`spork create --owner <org>` creates the copy in an organization, which lets
+all copies share the org's self-hosted runners (runner group with access to
+all repositories).
+
+- **Actions policy:** before creating anything, `create` checks the org's
+  Actions policy (needs org admin) and stops if it would block spork. Allow
+  `Shardbyte/spork@*` if the org restricts actions; if Actions is enabled
+  only for selected repositories, the new copy is added.
+- **App-only creation:** with the App installed on the org and given
+  **Administration**, **Secrets** and **Variables** (read and write) in
+  addition to the sync permissions, no personal token is needed:
+
+  ```sh
+  SPORK_APP_ID=123456 SPORK_APP_PRIVATE_KEY_FILE=app.pem \
+    ./scripts/spork create owner/repo --owner my-org --auth app --admin-auth app
+  ```
+
+  An App can't read org-level policy, so the policy check is skipped then.
+- **Org-level credentials:** on paid plans, `SPORK_APP_ID` /
+  `SPORK_APP_PRIVATE_KEY` / `SPORK_TOKEN` set once at org level are used
+  instead of per-repository copies. On **GitHub Free**, private repositories
+  can't read org-level secrets or variables, so `create` always stores them
+  in the repository.
+- **Shared runners:** every repository in the runner group can use them, and
+  an upstream workflow targeting `self-hosted` could run before spork disables
+  it. Prefer dedicated, unprivileged runners for spork copies.
+
 ## Upstream workflows and your Actions minutes
 
 Upstream's workflow files are present on `upstream` (and on `main` once
