@@ -12,6 +12,8 @@ fast-forwarded / merged, if you prefer).
 upstream repo ──(spork-sync, scheduled)──▶ your-copy:upstream ──(PR / ff / merge)──▶ your-copy:main
 ```
 
+**New here?** Follow the [step-by-step guide](docs/GUIDE.md).
+
 ## Create a private copy
 
 ### From your machine
